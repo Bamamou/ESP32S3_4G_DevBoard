@@ -1,131 +1,195 @@
-#include <main.h>
+#include "main.h"
 
-// DHTTYPE: Specifies the DHT sensor model (DHT11 in this case)
 DHT dht(DHTPIN, DHTTYPE);
 
-// Add after WiFi credentials
-const char* hostname = "ESP32-Weather-Station";
+// Task handles
+TaskHandle_t dataTaskHandle = NULL;
+TaskHandle_t receiveTaskHandle = NULL;
+TaskHandle_t ledTaskHandle = NULL;
 
-// Web Server and WebSocket Setup
-// AsyncWebServer handles HTTP requests asynchronously
-// WebSocket enables real-time bidirectional communication
-AsyncWebServer server(80);  // Server runs on port 80 (HTTP default)
-AsyncWebSocket ws("/ws");   // WebSocket endpoint at /ws
+// Check if return value is correct
+void connect4G (String cmd, const char* res)
+{
+  while (1)
+  {
+    Serial2.println(cmd);
+    delay(300);
+    while (Serial2.available() > 0)
+    {
+      if (Serial2.find(res))
+      {
+        digitalWrite(15, HIGH);   // turn the LED on (HIGH is the voltage level)
+        delay(100);              // wait for a second
+        digitalWrite(15, LOW);    // turn the LED off by making the voltage LOW
+        delay(100);
+        Serial.println(res);
+        return;
+      }
+      else
+      {
+        Serial.print(cmd);
+        Serial.println("  Return ERROR!");
+      }
+    }
+    delay(200);
+  }
+}
 
-// FreeRTOS Task Handle
-// Used to manage the sensor reading task
-TaskHandle_t sensorTaskHandle = NULL;
+void printConnectionStatus() {
+    Serial.println("----------------------------------------");
+    Serial.printf("Device Hostname: %s\n", DEVICE_HOSTNAME);
+    Serial.printf("Connected to: %s:%d\n", TCP_SERVER_IP, TCP_SERVER_PORT);
+    Serial.println("----------------------------------------");
+}
 
-// WebSocket Message Handler
-// Processes incoming WebSocket messages from clients
-void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-    AwsFrameInfo *info = (AwsFrameInfo*)arg;
-    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-        // Handle incoming WebSocket messages if needed
+void EC800NTCP_init(void) // Initialize TCP connection
+{
+  // prints title with ending line break
+  connect4G("AT", "OK");
+  Serial2.println("ATE0&W"); // Turn off echo
+  delay(300);
+  Serial2.println("AT+QICLOSE=0"); // Close previous socket connection
+  delay(300);
+  connect4G("AT+CPIN?", "+CPIN: READY"); // Returns +CPIN:READY, indicating SIM card is detected
+  connect4G("AT+CGATT?", "+CGATT: 1"); // Returns +CGACT: 1, ready for normal operation
+  
+  char connectCmd[128];
+  snprintf(connectCmd, sizeof(connectCmd), "AT+QIOPEN=1,0,\"TCP\",\"%s\",%d,1234,1", TCP_SERVER_IP, TCP_SERVER_PORT);
+  connect4G(connectCmd, "+QIOPEN: 0,0"); // Establish connection with server IP and port
+  
+  printConnectionStatus();
+}
+
+void TCP_SENDData(void) // Publish data to server
+{
+  char sendjson[]="{\"params\":{\"CurrentTemperature\":{\"value\":%d.%d},\"RelativeHumidity\":{\"value\":%d.%d}}}";
+  char sendtcp[]="AT+QISEND=0,%d";
+  char T_json[100];
+  char T_send[100];
+  char tempdata,humidata;
+  float h = dht.readHumidity();
+  // Read temperature as Celsius (the default)
+  float t = dht.readTemperature();
+  // Read temperature as Fahrenheit (isFahrenheit = true)
+  float f = dht.readTemperature(true);
+  // Check if any reads failed and exit early (to try again).
+  if (isnan(h) || isnan(t) || isnan(f)) {
+    Serial.println(F("Failed to read from DHT sensor!"));
+    return;
+  }
+  tempdata = (t - (int)t) * 10;
+  humidata = (h - (int)h) * 10;
+  sprintf(T_json, sendjson, (int)t, tempdata, (int)h, humidata);
+  sprintf(T_send,sendtcp,strlen(T_json));//先发指令长度
+  Serial2.println(T_send);
+  delay(300);              // wait for a second
+  Serial2.println(T_json);
+  while (Serial2.available() > 0)
+  {
+    //  char inByte = mySerial.read();
+    //  Serial.print(inByte);
+    if (Serial2.find("SEND OK"))
+    {
+      Serial.println("SEND OK");
+      break;
+    }
+  }
+}
+
+void TCP_RECData(void) // Receive data from server
+{
+  String recstr="";
+  String Jsontempdata=""; // Temporary
+  String Jsondata=""; // Actual
+  char index,endof;
+  while (Serial2.available() > 0)
+  {
+    if (Serial2.find("+QIURC:"))
+    {
+      recstr=Serial2.readString();
+     index=recstr.indexOf("{"); // Find JSON location
+     Jsontempdata=recstr.substring(index);
+     endof=Jsontempdata.length()-3;
+     //Serial.println(endof);
+     Jsondata=Jsontempdata.substring(0,endof); // Remove the last quotation mark
+      Serial.println(Jsondata);
+      //Serial.println(recstr);
+      break;
+    }
+  }
+}
+
+// Task for reading sensor and sending data
+void DataTask(void *parameter) {
+    while(1) {
+        TCP_SENDData();
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Send data every 2 seconds
     }
 }
 
-// WebSocket Event Handler
-// Manages different WebSocket events (connect, disconnect, data, etc.)
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
-             void *arg, uint8_t *data, size_t len) {
-    switch (type) {
-        case WS_EVT_CONNECT:
-            Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-            break;
-        case WS_EVT_DISCONNECT:
-            Serial.printf("WebSocket client #%u disconnected\n", client->id());
-            break;
-        case WS_EVT_DATA:
-            handleWebSocketMessage(arg, data, len);
-            break;
-        case WS_EVT_PONG:
-        case WS_EVT_ERROR:
-            break;
+// Task for receiving data
+void ReceiveTask(void *parameter) {
+    while(1) {
+        TCP_RECData();
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Check for data every second
     }
 }
 
-// Sensor Reading Task (runs on Core 1)
-// Continuously reads temperature and humidity data and broadcasts to connected clients
-void sensorTask(void *parameter) {
-    // Create a JSON document to store sensor readings
-    StaticJsonDocument<200> doc;
-    
-    while (1) {
-        // Read sensor values
-        float temperature = dht.readTemperature();
-        float humidity = dht.readHumidity();
-        
-        // Only send valid readings
-        if (!isnan(temperature) && !isnan(humidity)) {
-            // Pack readings into JSON format
-            doc["temperature"] = temperature;
-            doc["humidity"] = humidity;
-            doc["hostname"] = hostname;
-            doc["ip"] = WiFi.localIP().toString();
-            
-            // Convert to string and broadcast to all clients
-            String jsonString;
-            serializeJson(doc, jsonString);
-            ws.textAll(jsonString);
-        }
-        
-        // Wait for 2 seconds before next reading
-        vTaskDelay(pdMS_TO_TICKS(2000));
+// Task for LED blinking
+void LedTask(void *parameter) {
+    while(1) {
+        digitalWrite(8, HIGH);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        digitalWrite(8, LOW);
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
-// Setup Function
-// Initializes all components and starts the system
 void setup() {
-    // Initialize serial communication for debugging
+    // Initialize Serial communications
     Serial.begin(115200);
-    
-    // Start the DHT sensor
+    Serial2.begin(115200, SERIAL_8N1, 36, 37);
+
+    // Initialize GPIO
+    pinMode(35, OUTPUT);
+    pinMode(8, OUTPUT);
+    digitalWrite(35, HIGH);
+    delay(500);
+
+    // Initialize sensors and network
     dht.begin();
-    
-    // Set hostname before WiFi connection
-    WiFi.setHostname(hostname);
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(1000);
-        Serial.println("Connecting to WiFi...");
-    }
-    Serial.println(WiFi.localIP());  // Print the IP address
-    
-    // WebSocket Setup
-    ws.onEvent(onEvent);           // Register event handler
-    server.addHandler(&ws);        // Add WebSocket handler to server
-    
-    // Web Server Route Configuration
-    // Serve the main webpage
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send_P(200, "text/html", index_html);
-    });
-    
-    // Start the web server
-    server.begin();
-    
-    // Create Sensor Reading Task on Core 1
-    // Stack size: 4096 bytes
-    // Priority: 1 (low)
-    xTaskCreatePinnedToCore(
-        sensorTask,
-        "SensorTask",
-        4096,
+    EC800NTCP_init();
+
+    // Create tasks with different priorities
+    xTaskCreate(
+        DataTask,           // Task function
+        "DataTask",        // Name for debugging
+        STACK_SIZE,        // Stack size
+        NULL,              // Parameters
+        2,                 // Priority (higher number = higher priority)
+        &dataTaskHandle    // Task handle
+    );
+
+    xTaskCreate(
+        ReceiveTask,
+        "ReceiveTask",
+        STACK_SIZE,
         NULL,
         1,
-        &sensorTaskHandle,
-        1  // Run on Core 1
+        &receiveTaskHandle
+    );
+
+    xTaskCreate(
+        LedTask,
+        "LedTask",
+        STACK_SIZE,
+        NULL,
+        0,
+        &ledTaskHandle
     );
 }
 
-// Main Loop
-// Handles WebSocket client cleanup
 void loop() {
-    // Remove disconnected clients
-    ws.cleanupClients();
-    
-    // Small delay to prevent watchdog timer issues
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // Empty loop as we're using FreeRTOS tasks
+    vTaskDelete(NULL);
 }

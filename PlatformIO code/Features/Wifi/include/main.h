@@ -2,22 +2,16 @@
 #define __MAIN_H__
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <DHT.h>
-#include <ArduinoJson.h>
-#include "Website.h"
+#include "DHT.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-// DHT11 configuration
-// DHT11 Temperature and Humidity Sensor Configuration
-// DHTPIN: GPIO pin where the sensor is connected
 #define DHTPIN 1
 #define DHTTYPE DHT11
+#define STACK_SIZE 4096
+#define DEVICE_HOSTNAME "ESP32_4G_DEV"
+#define TCP_SERVER_IP "47.92.146.210"
+#define TCP_SERVER_PORT 8888
 
-// WiFi Network Credentials
-// Replace with your network credentials
-const char* ssid = "nicolas";
-const char* password = "Jesuisde94.";
 
 #endif
