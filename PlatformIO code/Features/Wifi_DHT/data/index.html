@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Sensor Data</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .data-container {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .refresh-button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .refresh-button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ESP32 Sensor Data</h1>
+        <button class="refresh-button" onclick="refreshData()">Refresh Data</button>
+        <div class="data-container">
+            <h2>Current Readings:</h2>
+            <p>Temperature: <span id="temperature">--</span>°C</p>
+            <p>Humidity: <span id="humidity">--</span>%</p>
+        </div>
+        <div class="data-container">
+            <h2>Raw JSON:</h2>
+            <pre id="rawJson"></pre>
+        </div>
+    </div>
+
+    <script>
+        function updateUI(jsonData) {
+            try {
+                const data = JSON.parse(jsonData);
+                const temp = data.params.CurrentTemperature.value;
+                const humidity = data.params.RelativeHumidity.value;
+                
+                document.getElementById('temperature').textContent = temp.toFixed(1);
+                document.getElementById('humidity').textContent = humidity.toFixed(1);
+                document.getElementById('rawJson').textContent = JSON.stringify(data, null, 2);
+            } catch (e) {
+                console.error('Error parsing JSON:', e);
+            }
+        }
+
+        function refreshData() {
+            fetch('/data')
+                .then(response => response.json())
+                .then(data => {
+                    updateUI(JSON.stringify(data));
+                })
+                .catch(error => {
+                    console.error('Error fetching data:', error);
+                });
+        }
+
+        // Refresh data every 5 seconds
+        setInterval(refreshData, 5000);
+        
+        // Initial data load
+        refreshData();
+    </script>
+</body>
+</html>
